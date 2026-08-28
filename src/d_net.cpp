@@ -2302,7 +2302,7 @@ void Net_DoCommand (int type, uint8_t **stream, int player)
 			uint16_t sequence = ReadInt16(stream);
 			uint16_t dataSize = ReadInt16(stream);
 
-			if (dataSize != 1920)
+			if (dataSize != 3840)
 			{
 				*stream += dataSize;
 				break;
@@ -2915,20 +2915,11 @@ void Net_SkipCommand (int type, uint8_t **stream)
 
 	switch (type)
 	{
-		/*
-		case DEM_VOIPDATA:
-		{
-			uint16_t dataSize = ((*stream)[2] << 8) | (*stream)[3];
-			skip = 4 + dataSize;
-			break;
-		}
-		*/
-
 		case DEM_VOIPDATA:
 		{
 			uint16_t dataSize = ((*stream)[2] << 8) | (*stream)[3];
 
-			if (dataSize != 1920)
+			if (dataSize != 3840)
 			{
 				skip = 4;
 				break;

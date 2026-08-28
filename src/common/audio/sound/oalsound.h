@@ -23,8 +23,6 @@
 
 #include "thirdparty/alext.h"
 
-
-
 class OpenALSoundStream;
 
 class OpenALSoundRenderer : public SoundRenderer
