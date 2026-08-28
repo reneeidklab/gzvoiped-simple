@@ -216,8 +216,8 @@ struct FVOIPVoice
     bool Started = false;
 };
 
-constexpr int VOIP_TARGET_QUEUE = 4;
-constexpr int VOIP_MAX_QUEUE = 5;
+constexpr int VOIP_TARGET_QUEUE = 3;
+constexpr int VOIP_MAX_QUEUE = 6;
 
 static FVOIPVoice VOIPVoices[MAXPLAYERS];
 
@@ -228,9 +228,8 @@ private:
 
 	static constexpr int SampleRate = 48000; // 48 kHz
 	static constexpr int Channels = 1;
-	static constexpr int BufferSamples = 4800; // originalmente 960
+	static constexpr int BufferSamples = 960; // originalmente 960
 
-	TArray<int16_t> Samples;
 
 public:
 	bool Init()
@@ -252,8 +251,6 @@ public:
 			Printf(TEXTCOLOR_RED "VOIP: Failed to open microphone.\n");
 			return false;
 		}
-
-		Samples.Resize(BufferSamples);
 
 		Printf(
 			"VOIP: Microphone opened (%d Hz, mono, 16-bit)\n",
@@ -378,15 +375,20 @@ static bool VOIP_InitVoice(int player)
 	if (player < 0 || player >= MAXPLAYERS)
 		return false;
 
-	if (VOIPVoices[player].Initialized)
+	FVOIPVoice& Voice = VOIPVoices[player];
+
+	if (Voice.Initialized)
 		return true;
 
-	FVOIPVoice& Voice = VOIPVoices[player];
+	Voice = {};
 
 	alGenSources(1, &Voice.Source);
 
-	if (alGetError() != AL_NO_ERROR)
+	if (alGetError() != AL_NO_ERROR || !Voice.Source)
+	{
+		Voice.Source = 0;
 		return false;
+	}
 
 	alGenBuffers(
 		VOIP_BUFFER_COUNT,
@@ -396,7 +398,7 @@ static bool VOIP_InitVoice(int player)
 	if (alGetError() != AL_NO_ERROR)
 	{
 		alDeleteSources(1, &Voice.Source);
-		Voice.Source = 0;
+		Voice = {};
 		return false;
 	}
 
@@ -443,6 +445,7 @@ static bool VOIP_InitVoice(int player)
 	);
 
 	Voice.Initialized = true;
+	Voice.Started = false;
 
 	return true;
 }
@@ -489,6 +492,9 @@ void VOIP_CheckALError(const char* where)
 
 static void VOIP_UpdatePlayerPositions()
 {
+	if (!gamestate == GS_LEVEL)
+		return;
+
 	for (int i = 0; i < MAXPLAYERS; i++)
 	{
 		if (!playeringame[i])
@@ -515,25 +521,6 @@ static void VOIP_UpdatePlayerPositions()
 			-(float)PlayerActor->Z()
 		);
 	}
-}
-
-static void VOIP_Init()
-{
-	if (!IsOpenALPresent())
-	{
-		Printf(TEXTCOLOR_RED "VOIP: OpenAL is not available.\n");
-		return;
-	}
-
-	if (!VoiceCapture.Init())
-		return;
-
-	VoiceCapture.Start();
-}
-
-static void VOIP_Shutdown()
-{
-	VoiceCapture.Shutdown();
 }
 
 static void VOIP_ReadMicrophone()
@@ -573,6 +560,21 @@ static FVOIPJitterPacket VOIPJitterBuffers[MAXPLAYERS][VOIP_JITTER_BUFFER_SIZE];
 static uint16_t VOIPNextPlaybackSequence[MAXPLAYERS] = {};
 static bool VOIPPlaybackStarted[MAXPLAYERS] = {};
 
+static void VOIP_ClearJitterBuffers()
+{
+	for (int i = 0; i < MAXPLAYERS; i++)
+	{
+		VOIPPlaybackStarted[i] = false;
+		VOIPNextPlaybackSequence[i] = 0;
+
+		for (int j = 0; j < VOIP_JITTER_BUFFER_SIZE; j++)
+		{
+			VOIPJitterBuffers[i][j].Valid = false;
+			VOIPJitterBuffers[i][j].Sequence = 0;
+		}
+	}
+}
+
 static void VOIP_PlayNextJitterPacket(int player)
 {
 	if (player < 0 || player >= MAXPLAYERS)
@@ -582,7 +584,17 @@ static void VOIP_PlayNextJitterPacket(int player)
 		return;
 
 	FVOIPVoice& Voice = VOIPVoices[player];
+
+	if (!Voice.Source)
+		return;
+
 	ALuint source = Voice.Source;
+
+	if (gamestate != GS_LEVEL)
+		return;
+
+	if (!VOIP_InitVoice(player))
+		return;
 
 	ALint processed = 0;
 
@@ -896,10 +908,10 @@ void VOIP_ReceiveAudio(
 	int size,
 	uint16_t sequence)
 {
-	if (player == consoleplayer)
+	if (player < 0 || player >= MAXPLAYERS)
 		return;
 
-	if (player < 0 || player >= MAXPLAYERS)
+	if (player == consoleplayer)
 		return;
 
 	if (!data || size != 1920)
@@ -907,7 +919,6 @@ void VOIP_ReceiveAudio(
 
 	if (!VOIP_InitVoice(player))
 		return;
-
 
 	if (VOIPPlaybackStarted[player])
 	{
@@ -970,6 +981,7 @@ void VOIP_ReceiveAudio(
 	FVOIPJitterPacket& packet =
 		VOIPJitterBuffers[player][slot];
 
+	packet.Valid = false;
 	packet.Sequence = sequence;
 
 	memcpy(
@@ -984,6 +996,49 @@ void VOIP_ReceiveAudio(
 	{
 		VOIPNextPlaybackSequence[player] = sequence;
 	}
+}
+
+static void VOIP_Init()
+{
+	if (!IsOpenALPresent())
+	{
+		Printf(TEXTCOLOR_RED "VOIP: OpenAL is not available.\n");
+		return;
+	}
+
+	if (!VoiceCapture.Init())
+		return;
+
+	VoiceCapture.Start();
+}
+
+static void VOIP_Shutdown()
+{
+	VoiceCapture.Shutdown();
+
+	for (int i = 0; i < MAXPLAYERS; i++)
+	{
+		FVOIPVoice& Voice = VOIPVoices[i];
+
+		if (Voice.Initialized)
+		{
+			if (Voice.Source)
+			{
+				alSourceStop(Voice.Source);
+				alSourcei(Voice.Source, AL_BUFFER, 0);
+				alDeleteSources(1, &Voice.Source);
+			}
+
+			alDeleteBuffers(
+				VOIP_BUFFER_COUNT,
+				Voice.Buffers
+			);
+		}
+
+		Voice = {};
+	}
+
+	VOIP_ClearJitterBuffers();
 }
 
 static void VOIP_StartTalking()
@@ -2759,7 +2814,7 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		if (!playeringame[i])
 			continue;
 
-		VOIP_PlayNextJitterPacket(i);
+		//VOIP_PlayNextJitterPacket(i);
 	}
 }
 

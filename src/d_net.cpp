@@ -248,10 +248,10 @@ struct TicSpecial //adicionar "static" aqui se der ruim!
 		streamptr = streams[(maketic/ticdup)%BACKUPTICS] + streamoffs;
 	}
 
-	void CheckSpace (size_t needed)
+	void CheckSpace(size_t needed)
 	{
-		if (streamoffs + needed >= specialsize)
-			GetMoreSpace (streamoffs + needed);
+		if (streamoffs + needed > specialsize)
+			GetMoreSpace(streamoffs + needed);
 
 		streamoffs += needed;
 	}
@@ -1020,9 +1020,20 @@ void NetUpdate (void)
 		G_BuildTiccmd (&localcmds[maketic % LOCALCMDTICS]);
 		maketic++;
 
+		if (VOIP_IsTalking())
+		{
+			int tick = I_GetTime();
+
+			if (tick != VOIPLastTick)
+			{
+				VOIPLastTick = tick;
+				VOIP_SendAudioFrame();
+			}
+		}
+
 		if (ticdup == 1 || maketic == 0)
 		{
-			Net_NewMakeTic ();
+			Net_NewMakeTic();
 		}
 		else
 		{
@@ -1306,14 +1317,19 @@ void NetUpdate (void)
 							{
 								Printf(
 									TEXTCOLOR_RED
-									"VOIP: special too large: %zu + %zu > 14000\n",
-									specialSize,
-									currentSize
+									"NET: special does not fit: %zu + %zu > 14000\n",
+									currentSize,
+									specialSize
 								);
 							}
 							else
 							{
-								memcpy(cmddata, specials.streams[start], specialSize);
+								memcpy(
+									cmddata,
+									specials.streams[start],
+									specialSize
+								);
+
 								cmddata += specialSize;
 							}
 						}
@@ -1327,11 +1343,26 @@ void NetUpdate (void)
 						uint8_t *spec;
 
 						WriteInt16 (netcmds[playerbytes[l]][start].consistancy, &cmddata);
-						spec = NetSpecs[playerbytes[l]][start].GetData (&len);
+						spec = NetSpecs[playerbytes[l]][start].GetData(&len);
+
 						if (spec != NULL)
 						{
-							memcpy (cmddata, spec, len);
-							cmddata += len;
+							size_t currentSize = cmddata - netbuffer;
+
+							if (currentSize + size_t(len) > 14000)
+							{
+								Printf(
+									TEXTCOLOR_RED
+									"NET: player special too large: %zu + %d > 14000\n",
+									currentSize,
+									len
+								);
+							}
+							else
+							{
+								memcpy(cmddata, spec, len);
+								cmddata += len;
+							}
 						}
 
 						WriteUserCmdMessage (&netcmds[playerbytes[l]][start].ucmd,
@@ -1415,7 +1446,7 @@ void NetUpdate (void)
 						totalavg = lastaverage;
 					}
 				}
-					
+
 				mastertics = nettics[nodeforplayer[Net_Arbitrator]] + totalavg;
 			}
 			if (nettics[0] <= mastertics)
@@ -1437,17 +1468,6 @@ void NetUpdate (void)
 				if (debugfile) fprintf(debugfile, "+");
 			}
 			oldnettics = nettics[0];
-		}
-	}
-
-	if (VOIP_IsTalking())
-	{
-		int tick = I_GetTime();
-
-		if (tick != VOIPLastTick)
-		{
-			VOIPLastTick = tick;
-			VOIP_SendAudioFrame();
 		}
 	}
 }
@@ -2277,25 +2297,25 @@ void Net_DoCommand (int type, uint8_t **stream, int player)
 
 	switch (type)
 	{
-	case DEM_VOIPDATA:
+		case DEM_VOIPDATA:
 		{
 			uint16_t sequence = ReadInt16(stream);
 			uint16_t dataSize = ReadInt16(stream);
 
-			if (dataSize == 0 || dataSize > 1920)
+			if (dataSize != 1920)
+			{
+				*stream += dataSize;
 				break;
-
-			TArray<uint8_t> buffer(dataSize);
-
-			memcpy(buffer.Data(), *stream, dataSize);
-			*stream += dataSize;
+			}
 
 			VOIP_ReceiveAudio(
 				player,
-				buffer.Data(),
+				*stream,
 				dataSize,
 				sequence
 			);
+
+			*stream += dataSize;
 
 			break;
 		}
@@ -2908,7 +2928,7 @@ void Net_SkipCommand (int type, uint8_t **stream)
 		{
 			uint16_t dataSize = ((*stream)[2] << 8) | (*stream)[3];
 
-			if (dataSize > 1920)
+			if (dataSize != 1920)
 			{
 				skip = 4;
 				break;
