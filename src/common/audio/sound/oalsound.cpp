@@ -2814,7 +2814,7 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		if (!playeringame[i])
 			continue;
 
-		//VOIP_PlayNextJitterPacket(i);
+		VOIP_PlayNextJitterPacket(i);
 	}
 }
 
