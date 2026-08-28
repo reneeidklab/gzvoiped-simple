@@ -33,6 +33,8 @@
 #include "d_protocol.h"
 #include "i_net.h"
 
+bool VOIP_IsTalking();
+
 class FDynamicBuffer
 {
 public:

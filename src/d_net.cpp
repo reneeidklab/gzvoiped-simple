@@ -968,6 +968,9 @@ int gametime;
 
 void NetUpdate (void)
 {
+	static int64_t VOIPNextSendTime = 0;
+	static int VOIPLastTick = -1;
+
 	int		lowtic;
 	int 	nowtime;
 	int 	newtics;
@@ -1020,7 +1023,6 @@ void NetUpdate (void)
 		if (ticdup == 1 || maketic == 0)
 		{
 			Net_NewMakeTic ();
-			VOIP_SendAudioFrame(); // Aplicar VOIP!!
 		}
 		else
 		{
@@ -1091,7 +1093,6 @@ void NetUpdate (void)
 				}
 
 				Net_NewMakeTic ();
-				VOIP_SendAudioFrame(); // Aplicar VOIP!!
 			}
 		}
 	}
@@ -1436,6 +1437,17 @@ void NetUpdate (void)
 				if (debugfile) fprintf(debugfile, "+");
 			}
 			oldnettics = nettics[0];
+		}
+	}
+
+	if (VOIP_IsTalking())
+	{
+		int tick = I_GetTime();
+
+		if (tick != VOIPLastTick)
+		{
+			VOIPLastTick = tick;
+			VOIP_SendAudioFrame();
 		}
 	}
 }

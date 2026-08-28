@@ -216,8 +216,8 @@ struct FVOIPVoice
     bool Started = false;
 };
 
-constexpr int VOIP_TARGET_QUEUE = 3;
-constexpr int VOIP_MAX_QUEUE = 6;
+constexpr int VOIP_TARGET_QUEUE = 4;
+constexpr int VOIP_MAX_QUEUE = 5;
 
 static FVOIPVoice VOIPVoices[MAXPLAYERS];
 
@@ -228,7 +228,7 @@ private:
 
 	static constexpr int SampleRate = 48000; // 48 kHz
 	static constexpr int Channels = 1;
-	static constexpr int BufferSamples = 960; // originalmente 960
+	static constexpr int BufferSamples = 4800; // originalmente 960
 
 	TArray<int16_t> Samples;
 
@@ -449,13 +449,16 @@ static bool VOIP_InitVoice(int player)
 
 static int VOIPTestQueuedBuffers = 0;
 static bool VOIPTalking = false;
+
+bool VOIP_IsTalking()
+{
+	return VOIPTalking;
+}
+
 float VOIPMicGain = 1.0f;
 
 CVAR(Float, voip_micgain, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Float, voip_volume, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
-
-static uint16_t VOIPLastSequence[MAXPLAYERS];
-static bool VOIPHasSequence[MAXPLAYERS] = {};
 
 static ALuint GetPlayerAudioSource(int player)
 {
@@ -556,62 +559,30 @@ static bool VOIPSequenceNewer(uint16_t a, uint16_t b)
 	return int16_t(a - b) > 0;
 }
 
-static void VOIP_UpdateListener()
+static constexpr int VOIP_JITTER_BUFFER_SIZE = 8;
+
+struct FVOIPJitterPacket
 {
-    if (!players[consoleplayer].mo)
-        return;
+	uint16_t Sequence = 0;
+	uint8_t Data[1920] = {};
+	bool Valid = false;
+};
 
-    AActor* PlayerActor = players[consoleplayer].mo;
+static FVOIPJitterPacket VOIPJitterBuffers[MAXPLAYERS][VOIP_JITTER_BUFFER_SIZE];
 
-    alListener3f(
-        AL_POSITION,
-        (float)PlayerActor->X(),
-        (float)PlayerActor->Y(),
-        -(float)PlayerActor->Z()
-    );
-}
+static uint16_t VOIPNextPlaybackSequence[MAXPLAYERS] = {};
+static bool VOIPPlaybackStarted[MAXPLAYERS] = {};
 
-void VOIP_ReceiveAudio(
-	int player,
-	const uint8_t* data,
-	int size,
-	uint16_t sequence)
+static void VOIP_PlayNextJitterPacket(int player)
 {
-	if (player == consoleplayer)
-		return;
-
 	if (player < 0 || player >= MAXPLAYERS)
 		return;
 
-	if (!data || size <= 0 || size > 1920)
-		return;
-
-	ALuint source = GetPlayerAudioSource(player);
-
-	if (!source)
+	if (!VOIP_InitVoice(player))
 		return;
 
 	FVOIPVoice& Voice = VOIPVoices[player];
-
-	alSourcef(
-		source,
-		AL_GAIN,
-		voip_volume
-	);
-
-	if (VOIPHasSequence[player])
-	{
-		if (!VOIPSequenceNewer(
-			sequence,
-			VOIPLastSequence[player]))
-		{
-			return;
-		}
-	}
-
-	VOIPLastSequence[player] = sequence;
-	VOIPHasSequence[player] = true;
-
+	ALuint source = Voice.Source;
 
 	ALint processed = 0;
 
@@ -646,86 +617,184 @@ void VOIP_ReceiveAudio(
 		processed--;
 	}
 
-	ALint queued = 0;
-
-	alGetSourcei(
-		source,
-		AL_BUFFERS_QUEUED,
-		&queued
-	);
-
-	if (queued >= VOIP_MAX_QUEUE)
+	if (!VOIPPlaybackStarted[player])
 	{
-		return;
+		int count = 0;
+
+		for (int i = 0; i < VOIP_JITTER_BUFFER_SIZE; i++)
+		{
+			if (VOIPJitterBuffers[player][i].Valid)
+				count++;
+		}
+
+		if (count < VOIP_TARGET_QUEUE)
+			return;
+
+		bool found = false;
+		uint16_t oldest = 0;
+
+		for (int i = 0; i < VOIP_JITTER_BUFFER_SIZE; i++)
+		{
+			if (!VOIPJitterBuffers[player][i].Valid)
+				continue;
+
+			if (!found ||
+				VOIPSequenceNewer(
+					oldest,
+					VOIPJitterBuffers[player][i].Sequence))
+			{
+				oldest =
+					VOIPJitterBuffers[player][i].Sequence;
+
+				found = true;
+			}
+		}
+
+		if (!found)
+			return;
+
+		VOIPNextPlaybackSequence[player] = oldest;
+		VOIPPlaybackStarted[player] = true;
 	}
 
-	int bufferIndex = -1;
+	constexpr int MAX_PACKETS_PER_UPDATE = 3;
 
-	for (int i = 0; i < VOIP_BUFFER_COUNT; i++)
+	for (int packetsAdded = 0;
+		packetsAdded < MAX_PACKETS_PER_UPDATE;
+		packetsAdded++)
 	{
-		if (!Voice.BufferInUse[i])
+		ALint queued = 0;
+
+		alGetSourcei(
+			source,
+			AL_BUFFERS_QUEUED,
+			&queued
+		);
+
+		if (queued >= VOIP_MAX_QUEUE)
+			break;
+
+		int packetSlot = -1;
+
+		for (int i = 0; i < VOIP_JITTER_BUFFER_SIZE; i++)
 		{
-			bufferIndex = i;
+			if (!VOIPJitterBuffers[player][i].Valid)
+				continue;
+
+			if (VOIPJitterBuffers[player][i].Sequence ==
+				VOIPNextPlaybackSequence[player])
+			{
+				packetSlot = i;
+				break;
+			}
+		}
+
+		if (packetSlot < 0)
+		{
+			int nextSlot = -1;
+
+			for (int i = 0; i < VOIP_JITTER_BUFFER_SIZE; i++)
+			{
+				if (!VOIPJitterBuffers[player][i].Valid)
+					continue;
+
+				uint16_t seq =
+					VOIPJitterBuffers[player][i].Sequence;
+
+				if (!VOIPSequenceNewer(
+					seq,
+					VOIPNextPlaybackSequence[player]))
+				{
+					continue;
+				}
+
+				if (nextSlot < 0 ||
+					VOIPSequenceNewer(
+						VOIPJitterBuffers[player][nextSlot].Sequence,
+						seq))
+				{
+					nextSlot = i;
+				}
+			}
+
+			if (nextSlot < 0)
+				break;
+
+			VOIPNextPlaybackSequence[player] =
+				VOIPJitterBuffers[player][nextSlot].Sequence;
+
+			packetSlot = nextSlot;
+		}
+
+		int bufferIndex = -1;
+
+		for (int i = 0; i < VOIP_BUFFER_COUNT; i++)
+		{
+			if (!Voice.BufferInUse[i])
+			{
+				bufferIndex = i;
+				break;
+			}
+		}
+
+		if (bufferIndex < 0)
+			break;
+
+		ALuint buffer = Voice.Buffers[bufferIndex];
+
+		if (!buffer)
+			break;
+
+		alBufferData(
+			buffer,
+			AL_FORMAT_MONO16,
+			VOIPJitterBuffers[player][packetSlot].Data,
+			1920,
+			48000
+		);
+
+		ALenum error = alGetError();
+
+		if (error != AL_NO_ERROR)
+		{
+			Printf(
+				TEXTCOLOR_RED
+				"VOIP: alBufferData error: 0x%x\n",
+				error
+			);
+
 			break;
 		}
-	}
 
-	if (bufferIndex < 0)
-	{
-		return;
-	}
+		Voice.BufferInUse[bufferIndex] = true;
 
-	ALuint buffer = Voice.Buffers[bufferIndex];
-
-	if (!buffer)
-		return;
-
-	Voice.BufferInUse[bufferIndex] = true;
-
-
-	alBufferData(
-		buffer,
-		AL_FORMAT_MONO16,
-		data,
-		size,
-		48000
-	);
-
-	ALenum error = alGetError();
-
-	if (error != AL_NO_ERROR)
-	{
-		Voice.BufferInUse[bufferIndex] = false;
-
-		Printf(
-			TEXTCOLOR_RED
-			"VOIP: alBufferData error: 0x%x\n",
-			error
+		alSourceQueueBuffers(
+			source,
+			1,
+			&buffer
 		);
 
-		return;
+		error = alGetError();
+
+		if (error != AL_NO_ERROR)
+		{
+			Voice.BufferInUse[bufferIndex] = false;
+
+			Printf(
+				TEXTCOLOR_RED
+				"VOIP: alSourceQueueBuffers error: 0x%x\n",
+				error
+			);
+
+			break;
+		}
+
+		VOIPJitterBuffers[player][packetSlot].Valid = false;
+
+		VOIPNextPlaybackSequence[player]++;
 	}
 
-	alSourceQueueBuffers(
-		source,
-		1,
-		&buffer
-	);
-
-	error = alGetError();
-
-	if (error != AL_NO_ERROR)
-	{
-		Voice.BufferInUse[bufferIndex] = false;
-
-		Printf(
-			TEXTCOLOR_RED
-			"VOIP: alSourceQueueBuffers error: 0x%x\n",
-			error
-		);
-
-		return;
-	}
+	ALint queued = 0;
 
 	alGetSourcei(
 		source,
@@ -738,7 +807,6 @@ void VOIP_ReceiveAudio(
 		if (queued >= VOIP_TARGET_QUEUE)
 		{
 			alSourcePlay(source);
-
 			Voice.Started = true;
 		}
 	}
@@ -756,6 +824,165 @@ void VOIP_ReceiveAudio(
 		{
 			alSourcePlay(source);
 		}
+	}
+}
+
+void VOIP_SendAudioFrame()
+{
+	if (!VOIPTalking)
+		return;
+
+	static int16_t sampleBuffer[960];
+
+	constexpr int FrameSamples = 960;
+	constexpr int MaxCaptureLatency = 1920;
+
+	int available = VoiceCapture.GetAvailableSamples();
+
+	if (available > MaxCaptureLatency)
+	{
+		VoiceCapture.DiscardOldSamples(FrameSamples);
+		available = VoiceCapture.GetAvailableSamples();
+	}
+
+	if (available < FrameSamples)
+		return;
+
+	int samplesRead = VoiceCapture.ReadSamples(
+		sampleBuffer,
+		FrameSamples
+	);
+
+	if (samplesRead != FrameSamples)
+		return;
+
+	for (int i = 0; i < samplesRead; i++)
+	{
+		int sample = int(sampleBuffer[i] * voip_micgain);
+
+		sample = clamp(
+			sample,
+			-32768,
+			32767
+		);
+
+		sampleBuffer[i] = (int16_t)sample;
+	}
+
+	uint16_t dataSize =
+		static_cast<uint16_t>(
+			samplesRead * sizeof(int16_t)
+			);
+
+	Net_WriteInt8(DEM_VOIPDATA);
+
+	Net_WriteInt16(
+		VOIPSequence++
+	);
+
+	Net_WriteInt16(
+		dataSize
+	);
+
+	Net_WriteBytes(
+		reinterpret_cast<const uint8_t*>(sampleBuffer),
+		dataSize
+	);
+}
+
+void VOIP_ReceiveAudio(
+	int player,
+	const uint8_t* data,
+	int size,
+	uint16_t sequence)
+{
+	if (player == consoleplayer)
+		return;
+
+	if (player < 0 || player >= MAXPLAYERS)
+		return;
+
+	if (!data || size != 1920)
+		return;
+
+	if (!VOIP_InitVoice(player))
+		return;
+
+
+	if (VOIPPlaybackStarted[player])
+	{
+		if (!VOIPSequenceNewer(
+			sequence,
+			VOIPNextPlaybackSequence[player] - 1))
+		{
+			return;
+		}
+	}
+
+	for (int i = 0; i < VOIP_JITTER_BUFFER_SIZE; i++)
+	{
+		if (!VOIPJitterBuffers[player][i].Valid)
+			continue;
+
+		if (VOIPJitterBuffers[player][i].Sequence == sequence)
+			return;
+	}
+
+	int slot = -1;
+
+	for (int i = 0; i < VOIP_JITTER_BUFFER_SIZE; i++)
+	{
+		if (!VOIPJitterBuffers[player][i].Valid)
+		{
+			slot = i;
+			break;
+		}
+	}
+
+	if (slot < 0)
+	{
+		int oldestSlot = -1;
+		uint16_t oldestSequence = sequence;
+
+		for (int i = 0; i < VOIP_JITTER_BUFFER_SIZE; i++)
+		{
+			if (!VOIPJitterBuffers[player][i].Valid)
+				continue;
+
+			if (oldestSlot < 0 ||
+				VOIPSequenceNewer(
+					oldestSequence,
+					VOIPJitterBuffers[player][i].Sequence))
+			{
+				oldestSequence =
+					VOIPJitterBuffers[player][i].Sequence;
+
+				oldestSlot = i;
+			}
+		}
+
+		if (oldestSlot < 0)
+			return;
+
+		slot = oldestSlot;
+	}
+
+	FVOIPJitterPacket& packet =
+		VOIPJitterBuffers[player][slot];
+
+	packet.Sequence = sequence;
+
+	memcpy(
+		packet.Data,
+		data,
+		1920
+	);
+
+	packet.Valid = true;
+
+	if (!VOIPPlaybackStarted[player])
+	{
+		VOIPNextPlaybackSequence[player] = sequence;
 	}
 }
 
@@ -784,56 +1011,6 @@ static void VOIP_StopTalking()
 	VOIPTalking = false;
 
 	Printf("VOIP: Transmission stopped.\n");
-}
-
-void VOIP_SendAudioFrame()
-{
-	if (!VOIPTalking)
-		return;
-
-	static int16_t sampleBuffer[960];
-
-	constexpr int FrameSamples = 960;
-	constexpr int MaxDataSize = FrameSamples * sizeof(int16_t);
-
-	VoiceCapture.DiscardOldSamples(FrameSamples);
-
-	int available = VoiceCapture.GetAvailableSamples();
-
-	if (available < FrameSamples)
-		return;
-
-	int samplesRead = VoiceCapture.ReadSamples(
-		sampleBuffer,
-		FrameSamples
-	);
-
-	if (samplesRead != FrameSamples)
-		return;
-
-	for (int i = 0; i < samplesRead; i++)
-	{
-		int sample = int(sampleBuffer[i] * voip_micgain);
-
-		sample = clamp(sample, -32768, 32767);
-
-		sampleBuffer[i] = (int16_t)sample;
-	}
-
-	uint16_t dataSize =
-		static_cast<uint16_t>(samplesRead * sizeof(int16_t));
-
-	if (dataSize > MaxDataSize)
-		return;
-
-	Net_WriteInt8(DEM_VOIPDATA);
-	Net_WriteInt16(VOIPSequence++);
-	Net_WriteInt16(dataSize);
-
-	Net_WriteBytes(
-		reinterpret_cast<const uint8_t*>(sampleBuffer),
-		dataSize
-	);
 }
 
 CCMD(voip_start)
@@ -2573,8 +2750,17 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		getALError();
 	}
 
-	VOIP_UpdateListener();
 	VOIP_UpdatePlayerPositions();
+	for (int i = 0; i < MAXPLAYERS; i++)
+	{
+		if (i == consoleplayer)
+			continue;
+
+		if (!playeringame[i])
+			continue;
+
+		VOIP_PlayNextJitterPacket(i);
+	}
 }
 
 void OpenALSoundRenderer::UpdateSounds()

@@ -41,16 +41,16 @@ const char *GetVersionString();
 
 /** Lots of different version numbers **/
 
-#define VERSIONSTR "4.13.0"
+#define VERSIONSTR "1.0.1"
 
 // The version as seen in the Windows resource
-#define RC_FILEVERSION 4,13,0,0
-#define RC_PRODUCTVERSION 4,13,0,0
+#define RC_FILEVERSION 1,0,1,0
+#define RC_PRODUCTVERSION 1,0,1,0
 #define RC_PRODUCTVERSION2 VERSIONSTR
 // These are for content versioning.
-#define VER_MAJOR 4
-#define VER_MINOR 13
-#define VER_REVISION 0
+#define VER_MAJOR 1
+#define VER_MINOR 0
+#define VER_REVISION 1
 
 // This should always refer to the GZDoom version a derived port is based on and not reflect the derived port's version number!
 #define ENG_MAJOR 4
@@ -60,7 +60,7 @@ const char *GetVersionString();
 // Version identifier for network games.
 // Bump it every time you do a release unless you're certain you
 // didn't change anything that will affect sync.
-#define NETGAMEVERSION 235
+#define NETGAMEVERSION 236
 
 // Version stored in the ini's [LastRun] section.
 // Bump it if you made some configuration change that you want to
@@ -91,16 +91,16 @@ const char *GetVersionString();
 #define SAVEVER 4560
 
 // This is so that derivates can use the same savegame versions without worrying about engine compatibility
-#define GAMESIG "GZDOOM"
-#define BASEWAD "gzdoom.pk3"
+#define GAMESIG "GZVOIPED"
+#define BASEWAD "gzvoiped.pk3"
 #define OPTIONALWAD "game_support.pk3"
 #define GZDOOM 1
 #define VR3D_ENABLED
 
 // More stuff that needs to be different for derivatives.
-#define GAMENAME "GZDoom"
-#define WGAMENAME L"GZDoom"
-#define GAMENAMELOWERCASE "gzdoom"
+#define GAMENAME "GZVoiped"
+#define WGAMENAME L"GZVoiped"
+#define GAMENAMELOWERCASE "gzvoiped"
 #define QUERYIWADDEFAULT true
 #define FORUM_URL "http://forum.zdoom.org/"
 #define BUGS_FORUM_URL	"http://forum.zdoom.org/viewforum.php?f=2"
