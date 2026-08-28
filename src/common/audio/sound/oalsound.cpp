@@ -70,7 +70,7 @@
 #include "v_text.h"
 #include "cmdlib.h"
 #include "m_fixed.h"
-#include "voip.h"
+//#include "voip.h"
 
 #define DYN_OPENAL
 
@@ -190,14 +190,34 @@ static ALvoid AL_APIENTRY _wrap_ProcessUpdatesSOFT(void)
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+// ================
+
 // VOIP / VOICECHAT
+
+static constexpr int VOIP_BUFFER_COUNT = 8;
 
 struct FVOIPVoice
 {
-	ALuint Source = 0;
-	ALuint Buffers[4] = {};
-	bool Initialized = false;
+    ALuint Source = 0;
+    ALuint Buffers[VOIP_BUFFER_COUNT] = {};
+    bool BufferInUse[VOIP_BUFFER_COUNT] = {};
+    bool Initialized = false;
+    bool Started = false;
 };
+
+constexpr int VOIP_TARGET_QUEUE = 3;
+constexpr int VOIP_MAX_QUEUE = 6;
 
 static FVOIPVoice VOIPVoices[MAXPLAYERS];
 
@@ -353,8 +373,6 @@ static bool VOIPTestInitialized = false;
 
 static uint16_t VOIPSequence = 0;
 
-static constexpr int VOIP_BUFFER_COUNT = 4;
-
 static bool VOIP_InitVoice(int player)
 {
 	if (player < 0 || player >= MAXPLAYERS)
@@ -363,17 +381,69 @@ static bool VOIP_InitVoice(int player)
 	if (VOIPVoices[player].Initialized)
 		return true;
 
-	alGenSources(1, &VOIPVoices[player].Source);
+	FVOIPVoice& Voice = VOIPVoices[player];
+
+	alGenSources(1, &Voice.Source);
+
 	if (alGetError() != AL_NO_ERROR)
 		return false;
 
-	alSourcei(VOIPVoices[player].Source, AL_SOURCE_RELATIVE, AL_FALSE);
-	alSourcef(VOIPVoices[player].Source, AL_GAIN, 3.0);
-	alSourcef(VOIPVoices[player].Source, AL_ROLLOFF_FACTOR, 0.5f);
-	alSourcef(VOIPVoices[player].Source, AL_REFERENCE_DISTANCE, 256.0f);
-	alSourcef(VOIPVoices[player].Source, AL_MAX_DISTANCE, 1024.0f);
+	alGenBuffers(
+		VOIP_BUFFER_COUNT,
+		Voice.Buffers
+	);
 
-	VOIPVoices[player].Initialized = true;
+	if (alGetError() != AL_NO_ERROR)
+	{
+		alDeleteSources(1, &Voice.Source);
+		Voice.Source = 0;
+		return false;
+	}
+
+	alSourcei(
+		Voice.Source,
+		AL_SOURCE_RELATIVE,
+		AL_FALSE
+	);
+
+	alSourcef(
+		Voice.Source,
+		AL_GAIN,
+		3.0f
+	);
+
+	alSourcef(
+		Voice.Source,
+		AL_ROLLOFF_FACTOR,
+		0.5f
+	);
+
+	alSourcef(
+		Voice.Source,
+		AL_REFERENCE_DISTANCE,
+		256.0f
+	);
+
+	alSourcef(
+		Voice.Source,
+		AL_MAX_DISTANCE,
+		1024.0f
+	);
+
+	alSourcef(
+		Voice.Source,
+		AL_MIN_GAIN,
+		0.0f
+	);
+
+	alSourcef(
+		Voice.Source,
+		AL_MAX_GAIN,
+		1.0f
+	);
+
+	Voice.Initialized = true;
+
 	return true;
 }
 
@@ -382,6 +452,7 @@ static bool VOIPTalking = false;
 float VOIPMicGain = 1.0f;
 
 CVAR(Float, voip_micgain, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Float, voip_volume, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 static uint16_t VOIPLastSequence[MAXPLAYERS];
 static bool VOIPHasSequence[MAXPLAYERS] = {};
@@ -397,30 +468,7 @@ static ALuint GetPlayerAudioSource(int player)
 	return VOIPVoices[player].Source;
 }
 
-static void VOIP_SetSourcePosition(
-	ALuint source,
-	float x,
-	float y,
-	float z
-)
-{
-	if (!source)
-		return;
 
-	alSourcei(
-		source,
-		AL_SOURCE_RELATIVE,
-		AL_FALSE
-	);
-
-	alSource3f(
-		source,
-		AL_POSITION,
-		x,
-		y,
-		-z
-	);
-}
 
 void VOIP_CheckALError(const char* where)
 {
@@ -508,6 +556,21 @@ static bool VOIPSequenceNewer(uint16_t a, uint16_t b)
 	return int16_t(a - b) > 0;
 }
 
+static void VOIP_UpdateListener()
+{
+    if (!players[consoleplayer].mo)
+        return;
+
+    AActor* PlayerActor = players[consoleplayer].mo;
+
+    alListener3f(
+        AL_POSITION,
+        (float)PlayerActor->X(),
+        (float)PlayerActor->Y(),
+        -(float)PlayerActor->Z()
+    );
+}
+
 void VOIP_ReceiveAudio(
 	int player,
 	const uint8_t* data,
@@ -523,19 +586,32 @@ void VOIP_ReceiveAudio(
 	if (!data || size <= 0 || size > 1920)
 		return;
 
+	ALuint source = GetPlayerAudioSource(player);
+
+	if (!source)
+		return;
+
+	FVOIPVoice& Voice = VOIPVoices[player];
+
+	alSourcef(
+		source,
+		AL_GAIN,
+		voip_volume
+	);
+
 	if (VOIPHasSequence[player])
 	{
-		if (!VOIPSequenceNewer(sequence, VOIPLastSequence[player]))
+		if (!VOIPSequenceNewer(
+			sequence,
+			VOIPLastSequence[player]))
+		{
 			return;
+		}
 	}
 
 	VOIPLastSequence[player] = sequence;
 	VOIPHasSequence[player] = true;
 
-	ALuint source = GetPlayerAudioSource(player);
-
-	if (!source)
-		return;
 
 	ALint processed = 0;
 
@@ -556,7 +632,16 @@ void VOIP_ReceiveAudio(
 		);
 
 		if (buffer)
-			alDeleteBuffers(1, &buffer);
+		{
+			for (int i = 0; i < VOIP_BUFFER_COUNT; i++)
+			{
+				if (Voice.Buffers[i] == buffer)
+				{
+					Voice.BufferInUse[i] = false;
+					break;
+				}
+			}
+		}
 
 		processed--;
 	}
@@ -569,17 +654,34 @@ void VOIP_ReceiveAudio(
 		&queued
 	);
 
-	if (queued >= 6)
+	if (queued >= VOIP_MAX_QUEUE)
 	{
 		return;
 	}
 
-	ALuint buffer = 0;
+	int bufferIndex = -1;
 
-	alGenBuffers(1, &buffer);
+	for (int i = 0; i < VOIP_BUFFER_COUNT; i++)
+	{
+		if (!Voice.BufferInUse[i])
+		{
+			bufferIndex = i;
+			break;
+		}
+	}
+
+	if (bufferIndex < 0)
+	{
+		return;
+	}
+
+	ALuint buffer = Voice.Buffers[bufferIndex];
 
 	if (!buffer)
 		return;
+
+	Voice.BufferInUse[bufferIndex] = true;
+
 
 	alBufferData(
 		buffer,
@@ -593,7 +695,7 @@ void VOIP_ReceiveAudio(
 
 	if (error != AL_NO_ERROR)
 	{
-		alDeleteBuffers(1, &buffer);
+		Voice.BufferInUse[bufferIndex] = false;
 
 		Printf(
 			TEXTCOLOR_RED
@@ -614,7 +716,7 @@ void VOIP_ReceiveAudio(
 
 	if (error != AL_NO_ERROR)
 	{
-		alDeleteBuffers(1, &buffer);
+		Voice.BufferInUse[bufferIndex] = false;
 
 		Printf(
 			TEXTCOLOR_RED
@@ -625,17 +727,35 @@ void VOIP_ReceiveAudio(
 		return;
 	}
 
-	ALint state = 0;
-
 	alGetSourcei(
 		source,
-		AL_SOURCE_STATE,
-		&state
+		AL_BUFFERS_QUEUED,
+		&queued
 	);
 
-	if (state != AL_PLAYING)
+	if (!Voice.Started)
 	{
-		alSourcePlay(source);
+		if (queued >= VOIP_TARGET_QUEUE)
+		{
+			alSourcePlay(source);
+
+			Voice.Started = true;
+		}
+	}
+	else
+	{
+		ALint state = 0;
+
+		alGetSourcei(
+			source,
+			AL_SOURCE_STATE,
+			&state
+		);
+
+		if (state != AL_PLAYING && queued > 0)
+		{
+			alSourcePlay(source);
+		}
 	}
 }
 
@@ -706,13 +826,6 @@ void VOIP_SendAudioFrame()
 	if (dataSize > MaxDataSize)
 		return;
 
-	Printf(
-		"VOIP packet: sequence=%u samples=%d bytes=%u\n",
-		(unsigned)VOIPSequence,
-		samplesRead,
-		(unsigned)dataSize
-	);
-
 	Net_WriteInt8(DEM_VOIPDATA);
 	Net_WriteInt16(VOIPSequence++);
 	Net_WriteInt16(dataSize);
@@ -770,189 +883,19 @@ CCMD(voip_talk_stop)
 	VOIP_StopTalking();
 }
 
-/*
-* Código para aplicar volume no VOIP_SendAudioFrame:
-*
-for (int i = 0; i < samplesRead; i++)
-	{
-		int sample = int(sampleBuffer[i] * voip_micgain);
-
-		sample = clamp(sample, -32768, 32767);
-
-		sampleBuffer[i] = (int16_t)sample;
-	}
-*/
-
-/*
-static bool VOIP_TestInit()
+CCMD(voip)
 {
-	if (VOIPTestInitialized)
-		return true;
-
-	while (alGetError() != AL_NO_ERROR)
+	if (VOIPTalking)
 	{
-	}
-
-	alGenSources(1, &VOIPTestSource);
-
-	ALenum Error = alGetError();
-
-	if (Error != AL_NO_ERROR)
-	{
-		Printf(
-			TEXTCOLOR_RED
-			"VOIP: Failed to create test source. OpenAL error: 0x%x\n",
-			Error
-		);
-
-		VOIPTestSource = 0;
-		return false;
-	}
-
-	alGenBuffers(4, VOIPTestBuffers);
-
-	Error = alGetError();
-
-	if (Error != AL_NO_ERROR)
-	{
-		Printf(
-			TEXTCOLOR_RED
-			"VOIP: Failed to create test buffers. OpenAL error: 0x%x\n",
-			Error
-		);
-
-		alDeleteSources(1, &VOIPTestSource);
-		VOIPTestSource = 0;
-
-		return false;
-	}
-
-	alSourcef(
-		VOIPTestSource,
-		AL_GAIN,
-		8.0f
-	);
-
-	alSourcei(
-		VOIPTestSource,
-		AL_SOURCE_RELATIVE,
-		AL_TRUE
-	);
-
-	alSource3f(
-		VOIPTestSource,
-		AL_POSITION,
-		0.0f,
-		0.0f,
-		0.0f
-	);
-
-	Error = alGetError();
-
-	if (Error != AL_NO_ERROR)
-	{
-		Printf(
-			TEXTCOLOR_RED
-			"VOIP: Failed to set source gain. OpenAL error: 0x%x\n",
-			Error
-		);
-
-		alDeleteSources(1, &VOIPTestSource);
-		alDeleteBuffers(4, VOIPTestBuffers);
-
-		VOIPTestSource = 0;
-
-		return false;
-	}
-
-	VOIPTestQueuedBuffers = 0;
-	VOIPTestInitialized = true;
-
-	return true;
-}
-
-static void VOIP_TestLoop()
-{
-	if (!VOIPTalking)
-		return;
-
-	if (!VOIPTestInitialized)
-		return;
-
-	static int16_t Samples[960];
-
-	const int Available = VoiceCapture.GetAvailableSamples();
-
-	if (Available < 960)
-		return;
-
-	const int NumSamples = VoiceCapture.ReadSamples(
-		Samples,
-		960
-	);
-
-	if (NumSamples <= 0)
-		return;
-
-	ALuint Buffer = 0;
-
-	ALint Processed = 0;
-
-	alGetSourcei(
-		VOIPTestSource,
-		AL_BUFFERS_PROCESSED,
-		&Processed
-	);
-
-	if (Processed > 0)
-	{
-		alSourceUnqueueBuffers(
-			VOIPTestSource,
-			1,
-			&Buffer
-		);
-
-		VOIPTestQueuedBuffers--;
-	}
-	else if (VOIPTestQueuedBuffers < 4)
-	{
-		Buffer = VOIPTestBuffers[VOIPTestQueuedBuffers];
+		VOIP_StopTalking();
 	}
 	else
 	{
-		return;
-	}
-
-	alBufferData(
-		Buffer,
-		AL_FORMAT_MONO16,
-		Samples,
-		NumSamples * sizeof(int16_t),
-		48000
-	);
-
-	alSourceQueueBuffers(
-		VOIPTestSource,
-		1,
-		&Buffer
-	);
-
-	VOIPTestQueuedBuffers++;
-
-	ALint State = 0;
-
-	alGetSourcei(
-		VOIPTestSource,
-		AL_SOURCE_STATE,
-		&State
-	);
-
-	if (State != AL_PLAYING)
-	{
-		alSourcePlay(VOIPTestSource);
+		VOIP_StartTalking();
 	}
 }
-*/
+
+
 
 
 
@@ -974,7 +917,7 @@ class OpenALSoundStream : public SoundStream
 	ALenum Format;
 	ALsizei FrameSize;
 
-	static const int BufferCount = 4;
+	static const int BufferCount = 8;
 	ALuint Buffers[BufferCount];
 	ALuint Source;
 
@@ -2630,6 +2573,7 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		getALError();
 	}
 
+	VOIP_UpdateListener();
 	VOIP_UpdatePlayerPositions();
 }
 

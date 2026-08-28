@@ -8,3 +8,5 @@ space +jump
 x crouch
 e +use
 mouse2 +altattack
+v voip
+f chasecam

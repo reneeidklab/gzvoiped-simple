@@ -1939,6 +1939,7 @@ OptionMenu SoundOptions protected
 	Slider "$SNDMNU_SFXVOLUME",			"snd_sfxvolume", 0, 1, 0.05, 2
 	Slider "$SNDMNU_MUSICVOLUME",		"snd_musicvolume", 0, 1, 0.05, 2
 	Slider "VOIP_MICGAIN",		"voip_micgain", 0, 8, 0.25, 2
+	Slider "VOIP_VOLUME",		"voip_volume", 0, 3, 0.1, 2
 	StaticText " "
 	Slider "$SNDMNU_MENUVOLUME",		"snd_menuvolume", 0, 1, 0.05, 2
 	StaticText " "

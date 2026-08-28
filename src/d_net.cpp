@@ -74,7 +74,7 @@
 #include "i_interface.h"
 #include "savegamemanager.h"
 
-#include "voip.h"
+//#include "voip.h"
 #include "oalsound.h"
 #include "c_dispatch.h"
 #include "v_text.h"
