@@ -1,4 +1,3 @@
-
 class SeqNode native
 {
 	enum ESeqType 

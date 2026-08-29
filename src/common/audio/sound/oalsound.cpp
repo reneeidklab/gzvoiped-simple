@@ -70,6 +70,9 @@
 #include "v_text.h"
 #include "cmdlib.h"
 #include "m_fixed.h"
+#include "vm.h"
+#include "zstring.h"
+#include "printf.h"
 //#include "voip.h"
 
 #define DYN_OPENAL
@@ -229,12 +232,45 @@ class FVoiceCapture
 {
 private:
 	ALCdevice* CaptureDevice = nullptr;
+	FString SelectedDevice;
 
 	static constexpr int SampleRate = VOIP_SAMPLE_RATE;
 	static constexpr int Channels = 1;
 	static constexpr int BufferSamples = VOIP_FRAME_SAMPLES * 2;
 
 public:
+
+	TArray<FString> GetCaptureDevices()
+	{
+		TArray<FString> Devices;
+
+		const ALCchar* DeviceList =
+			alcGetString(nullptr, ALC_CAPTURE_DEVICE_SPECIFIER);
+
+		if (!DeviceList)
+			return Devices;
+
+		const ALCchar* Device = DeviceList;
+
+		while (*Device)
+		{
+			Devices.Push(FString(Device));
+			Device += strlen(Device) + 1;
+		}
+
+		return Devices;
+	}
+
+	void SetSelectedDevice(const FString& DeviceName)
+	{
+		SelectedDevice = DeviceName;
+	}
+
+	const FString& GetSelectedDevice() const
+	{
+		return SelectedDevice;
+	}
+
 	bool Init()
 	{
 		if (CaptureDevice)
@@ -242,8 +278,13 @@ public:
 
 		Printf("VOIP: Opening microphone...\n");
 
+		const ALCchar* DeviceName = nullptr;
+
+		if (!SelectedDevice.IsEmpty())
+			DeviceName = SelectedDevice.GetChars();
+
 		CaptureDevice = alcCaptureOpenDevice(
-			nullptr,
+			DeviceName,
 			SampleRate,
 			AL_FORMAT_MONO16,
 			BufferSamples
@@ -251,7 +292,19 @@ public:
 
 		if (!CaptureDevice)
 		{
-			Printf(TEXTCOLOR_RED "VOIP: Failed to open microphone.\n");
+			Printf(
+				TEXTCOLOR_RED
+				"VOIP: Failed to open microphone.\n"
+			);
+
+			if (!SelectedDevice.IsEmpty())
+			{
+				Printf(
+					"VOIP: Selected device: %s\n",
+					SelectedDevice.GetChars()
+				);
+			}
+
 			return false;
 		}
 
@@ -259,6 +312,18 @@ public:
 			"VOIP: Microphone opened (%d Hz, mono, 16-bit)\n",
 			SampleRate
 		);
+
+		if (!SelectedDevice.IsEmpty())
+		{
+			Printf(
+				"VOIP: Input device: %s\n",
+				SelectedDevice.GetChars()
+			);
+		}
+		else
+		{
+			Printf("VOIP: Input device: Default\n");
+		}
 
 		return true;
 	}
@@ -269,6 +334,7 @@ public:
 			return;
 
 		alcCaptureStart(CaptureDevice);
+
 		Printf("VOIP: Microphone capture started.\n");
 	}
 
@@ -278,6 +344,7 @@ public:
 			return;
 
 		alcCaptureStop(CaptureDevice);
+
 		Printf("VOIP: Microphone capture stopped.\n");
 	}
 
@@ -298,17 +365,25 @@ public:
 		return available;
 	}
 
-	int ReadSamples(int16_t* destination, int maxSamples)
+	int ReadSamples(
+		int16_t* destination,
+		int maxSamples
+	)
 	{
-		if (!CaptureDevice || !destination || maxSamples <= 0)
+		if (!CaptureDevice ||
+			!destination ||
+			maxSamples <= 0)
+		{
 			return 0;
+		}
 
 		int available = GetAvailableSamples();
 
 		if (available <= 0)
 			return 0;
 
-		int samplesToRead = min(available, maxSamples);
+		int samplesToRead =
+			min(available, maxSamples);
 
 		alcCaptureSamples(
 			CaptureDevice,
@@ -317,19 +392,6 @@ public:
 		);
 
 		return samplesToRead;
-	}
-
-	void Shutdown()
-	{
-		if (!CaptureDevice)
-			return;
-
-		alcCaptureStop(CaptureDevice);
-		alcCaptureCloseDevice(CaptureDevice);
-
-		CaptureDevice = nullptr;
-
-		Printf("VOIP: Microphone closed.\n");
 	}
 
 	void DiscardOldSamples(int keepSamples)
@@ -342,13 +404,15 @@ public:
 		if (available <= keepSamples)
 			return;
 
-		int discardSamples = available - keepSamples;
+		int discardSamples =
+			available - keepSamples;
 
 		static int16_t discardBuffer[1024];
 
 		while (discardSamples > 0)
 		{
-			int amount = min(discardSamples, 1024);
+			int amount =
+				min(discardSamples, 1024);
 
 			alcCaptureSamples(
 				CaptureDevice,
@@ -358,6 +422,18 @@ public:
 
 			discardSamples -= amount;
 		}
+	}
+
+	void Shutdown()
+	{
+		if (!CaptureDevice)
+			return;
+
+		alcCaptureStop(CaptureDevice);
+		alcCaptureCloseDevice(CaptureDevice);
+		CaptureDevice = nullptr;
+
+		Printf("VOIP: Microphone closed.\n");
 	}
 };
 
@@ -463,6 +539,7 @@ float VOIPMicGain = 1.0f;
 
 CVAR(Float, voip_micgain, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Float, voip_volume, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Int, voip_micdevice, -1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 static ALuint GetPlayerAudioSource(int player)
 {
@@ -970,16 +1047,29 @@ void VOIP_ReceiveAudio(
 
 static void VOIP_Init()
 {
-	if (!IsOpenALPresent())
-	{
-		Printf(TEXTCOLOR_RED "VOIP: OpenAL is not available.\n");
-		return;
-	}
+    if (!IsOpenALPresent())
+    {
+        Printf(TEXTCOLOR_RED "VOIP: OpenAL is not available.\n");
+        return;
+    }
 
-	if (!VoiceCapture.Init())
-		return;
+    TArray<FString> Devices = VoiceCapture.GetCaptureDevices();
 
-	VoiceCapture.Start();
+    if (voip_micdevice >= 0 && voip_micdevice < Devices.Size())
+    {
+        VoiceCapture.SetSelectedDevice(Devices[voip_micdevice]);
+
+        Printf(
+            "VOIP: Using saved microphone [%d]: %s\n",
+            voip_micdevice,
+            Devices[voip_micdevice].GetChars()
+        );
+    }
+
+    if (!VoiceCapture.Init())
+        return;
+
+    VoiceCapture.Start();
 }
 
 static void VOIP_Shutdown()
@@ -1096,6 +1186,182 @@ CCMD(voip)
 		VOIP_StartTalking();
 	}
 }
+
+CCMD(voip_mics)
+{
+	TArray<FString> Devices = VoiceCapture.GetCaptureDevices();
+
+	Printf("VOIP: Found %d capture devices:\n", Devices.Size());
+
+	for (int i = 0; i < Devices.Size(); i++)
+	{
+		Printf(
+			"VOIP: [%d] %s\n",
+			i,
+			Devices[i].GetChars()
+		);
+	}
+}
+
+CCMD(voip_mic)
+{
+	if (argv.argc() < 2)
+	{
+		Printf("VOIP: Usage: voip_mic <index>\n");
+		return;
+	}
+
+	int index = atoi(argv[1]);
+
+	TArray<FString> Devices = VoiceCapture.GetCaptureDevices();
+
+	if (index < 0 || index >= Devices.Size())
+	{
+		Printf(
+			TEXTCOLOR_RED
+			"VOIP: Invalid microphone index.\n"
+		);
+		return;
+	}
+
+	bool wasTalking = VOIPTalking;
+
+	if (wasTalking)
+	{
+		VoiceCapture.Stop();
+		VOIPTalking = false;
+	}
+
+	VoiceCapture.Shutdown();
+
+	VoiceCapture.SetSelectedDevice(Devices[index]);
+
+	voip_micdevice = index;
+
+	Printf(
+		"VOIP: Selected microphone [%d]: %s\n",
+		index,
+		Devices[index].GetChars()
+	);
+
+	if (!VoiceCapture.Init())
+	{
+		Printf(
+			TEXTCOLOR_RED
+			"VOIP: Failed to initialize selected microphone.\n"
+		);
+		return;
+	}
+
+	if (wasTalking)
+	{
+		VoiceCapture.Start();
+		VOIPTalking = true;
+	}
+
+	Printf("VOIP: Microphone changed successfully.\n");
+}
+
+static int VOIP_GetMicrophoneCount()
+{
+	TArray<FString> Devices = VoiceCapture.GetCaptureDevices();
+	return Devices.Size();
+}
+
+/*
+static FString VOIP_GetMicrophoneName(int index)
+{
+	TArray<FString> Devices = VoiceCapture.GetCaptureDevices();
+
+	if (index < 0 || index >= Devices.Size())
+		return "";
+
+	return Devices[index];
+}
+*/
+
+static int VOIP_GetSelectedMicrophone()
+{
+	return voip_micdevice;
+}
+
+static int VOIP_SetMicrophone(int index)
+{
+	TArray<FString> Devices = VoiceCapture.GetCaptureDevices();
+
+	if (index < 0 || index >= Devices.Size())
+		return 0;
+
+	bool wasTalking = VOIPTalking;
+
+	if (VoiceCapture.GetSelectedDevice() == Devices[index])
+	{
+		voip_micdevice = index;
+		return 1;
+	}
+
+	if (VOIPTalking)
+	{
+		VoiceCapture.Stop();
+		VOIPTalking = false;
+	}
+
+	VoiceCapture.Shutdown();
+
+	VoiceCapture.SetSelectedDevice(Devices[index]);
+
+	voip_micdevice = index;
+
+	if (!VoiceCapture.Init())
+	{
+		Printf(
+			TEXTCOLOR_RED
+			"VOIP: Failed to initialize selected microphone.\n"
+		);
+
+		return 0;
+	}
+
+	if (wasTalking)
+	{
+		VoiceCapture.Start();
+		VOIPTalking = true;
+	}
+
+	Printf(
+		"VOIP: Selected microphone [%d]: %s\n",
+		index,
+		Devices[index].GetChars()
+	);
+
+	return 1;
+}
+
+DEFINE_ACTION_FUNCTION(DObject, VOIP_GetMicrophoneCount)
+{
+	PARAM_PROLOGUE;
+
+	ACTION_RETURN_INT(VOIP_GetMicrophoneCount());
+}
+
+// ================================================== VOIP END ==================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -2775,7 +3041,6 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		getALError();
 	}
 
-	VOIP_UpdatePlayerPositions();
 	for (int i = 0; i < MAXPLAYERS; i++)
 	{
 		if (i == consoleplayer)
@@ -2793,6 +3058,7 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 
 void OpenALSoundRenderer::UpdateSounds()
 {
+	VOIP_UpdatePlayerPositions();
 	alProcessUpdatesSOFT();
 
 	if(ALC.EXT_disconnect)
