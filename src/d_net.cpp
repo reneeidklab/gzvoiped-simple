@@ -1315,12 +1315,14 @@ void NetUpdate (void)
 
 							if (currentSize + specialSize > 14000)
 							{
+								/*
 								Printf(
 									TEXTCOLOR_RED
 									"NET: special does not fit: %zu + %zu > 14000\n",
 									currentSize,
 									specialSize
 								);
+								*/
 							}
 							else
 							{

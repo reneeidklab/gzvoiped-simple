@@ -81,7 +81,7 @@
 
 // As per http://support.microsoft.com/kb/q192599/ the standard
 // size for network buffers is 8k.
-#define TRANSMIT_SIZE		8000
+#define TRANSMIT_SIZE		18000 // TRANSMIT_SIZE WAS 8000
 
 /* [Petteri] Get more portable: */
 #ifndef __WIN32__
