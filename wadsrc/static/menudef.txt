@@ -582,6 +582,9 @@ OptionMenu "ChatControlsMenu" protected
 	ScrollTop 2
 	StaticTextSwitchable "$CNTRLMNU_SWITCHTEXT1", "$CNTRLMNU_SWITCHTEXT2", "ControlMessage"
 
+	StaticText "Voice Chat"
+	Control "Toggle VOIP", "voip"
+
 	StaticText ""
 	Control    "$CNTRLMNU_SCOREBOARD"       , "+showscores"
 	Control    "$CNTRLMNU_TOGGLESCOREBOARD" , "togglescoreboard"

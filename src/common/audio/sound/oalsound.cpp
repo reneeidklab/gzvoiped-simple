@@ -506,7 +506,7 @@ static bool VOIP_InitVoice(int player)
 	alSourcef(
 		Voice.Source,
 		AL_MAX_DISTANCE,
-		1024.0f
+		768.0f
 	);
 
 	alSourcef(
@@ -568,7 +568,7 @@ void VOIP_CheckALError(const char* where)
 	}
 }
 
-static void VOIP_UpdatePlayerPositions()
+void VOIP_UpdatePlayerPositions()
 {
 	if (gamestate != GS_LEVEL)
 		return;
@@ -591,12 +591,22 @@ static void VOIP_UpdatePlayerPositions()
 
 		AActor* PlayerActor = players[i].mo;
 
+		/*
+		Printf(
+			"VOIP %d POSITION: X=%f Y=%f Z=%f\n",
+			i,
+			PlayerActor->X(),
+			PlayerActor->Y(),
+			PlayerActor->Z()
+		);
+		*/
+
 		alSource3f(
 			Voice.Source,
 			AL_POSITION,
 			(float)PlayerActor->X(),
-			(float)PlayerActor->Y(),
-			-(float)PlayerActor->Z()
+			(float)PlayerActor->Z(),
+			(float)PlayerActor->Y()
 		);
 	}
 }
@@ -3058,7 +3068,7 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 
 void OpenALSoundRenderer::UpdateSounds()
 {
-	VOIP_UpdatePlayerPositions();
+	//VOIP_UpdatePlayerPositions();
 	alProcessUpdatesSOFT();
 
 	if(ALC.EXT_disconnect)

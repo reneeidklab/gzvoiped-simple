@@ -2113,6 +2113,8 @@ void TryRunTics (void)
 	{
 		TicStabilityWait();
 	}
+
+	VOIP_UpdatePlayerPositions();
 }
 
 void Net_CheckLastReceived (int counts)

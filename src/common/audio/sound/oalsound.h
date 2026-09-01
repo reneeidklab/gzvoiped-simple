@@ -23,6 +23,8 @@
 
 #include "thirdparty/alext.h"
 
+void VOIP_UpdatePlayerPositions();
+
 class OpenALSoundStream;
 
 class OpenALSoundRenderer : public SoundRenderer
