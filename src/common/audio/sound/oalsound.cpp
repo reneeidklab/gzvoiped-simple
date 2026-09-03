@@ -217,6 +217,10 @@ static constexpr int VOIP_TARGET_QUEUE = 3;
 static constexpr int VOIP_MAX_QUEUE = 5;
 static constexpr int VOIP_JITTER_BUFFER_SIZE = 16;
 
+CVAR(Float, voip_micgain, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Float, voip_volume, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Int, voip_micdevice, -1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+
 struct FVOIPVoice
 {
     ALuint Source = 0;
@@ -479,51 +483,21 @@ static bool VOIP_InitVoice(int player)
 		return false;
 	}
 
-	alSourcei(
-		Voice.Source,
-		AL_SOURCE_RELATIVE,
-		AL_FALSE
-	);
+	alSourcei(Voice.Source, AL_SOURCE_RELATIVE, AL_FALSE);
+	alSourcei(Voice.Source, AL_LOOPING, AL_FALSE);
 
-	alSourcef(
-		Voice.Source,
-		AL_GAIN,
-		3.0f
-	);
+	alDistanceModel(AL_LINEAR_DISTANCE);
 
-	alSourcef(
-		Voice.Source,
-		AL_ROLLOFF_FACTOR,
-		0.5f
-	);
+	alSourcef(Voice.Source, AL_REFERENCE_DISTANCE, 192.0f);   // comeca a cair
+	alSourcef(Voice.Source, AL_MAX_DISTANCE,       1024.0f);  // some totalmente
+	alSourcef(Voice.Source, AL_ROLLOFF_FACTOR,     1.0f);
 
-	alSourcef(
-		Voice.Source,
-		AL_REFERENCE_DISTANCE,
-		256.0f
-	);
-
-	alSourcef(
-		Voice.Source,
-		AL_MAX_DISTANCE,
-		768.0f
-	);
-
-	alSourcef(
-		Voice.Source,
-		AL_MIN_GAIN,
-		0.0f
-	);
-
-	alSourcef(
-		Voice.Source,
-		AL_MAX_GAIN,
-		1.0f
-	);
+	alSourcef(Voice.Source, AL_GAIN,     1.0f * voip_volume);
+	alSourcef(Voice.Source, AL_MIN_GAIN, 0.0f);
+	alSourcef(Voice.Source, AL_MAX_GAIN, 1.0f);
 
 	Voice.Initialized = true;
 	Voice.Started = false;
-
 	return true;
 }
 
@@ -536,10 +510,6 @@ bool VOIP_IsTalking()
 }
 
 float VOIPMicGain = 1.0f;
-
-CVAR(Float, voip_micgain, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
-CVAR(Float, voip_volume, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
-CVAR(Int, voip_micdevice, -1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 static ALuint GetPlayerAudioSource(int player)
 {
@@ -575,39 +545,23 @@ void VOIP_UpdatePlayerPositions()
 
 	for (int i = 0; i < MAXPLAYERS; i++)
 	{
-		if (!playeringame[i])
-			continue;
-
-		if (!players[i].mo)
-			continue;
-
-		if (i == consoleplayer)
+		if (!playeringame[i] || !players[i].mo || i == consoleplayer)
 			continue;
 
 		if (!VOIP_InitVoice(i))
 			continue;
 
 		FVOIPVoice& Voice = VOIPVoices[i];
+		AActor* mo = players[i].mo;
 
-		AActor* PlayerActor = players[i].mo;
+		alSource3f(Voice.Source, AL_POSITION,
+			(float)mo->X(),
+			(float)mo->Y(),
+			-(float)mo->Z());
 
-		/*
-		Printf(
-			"VOIP %d POSITION: X=%f Y=%f Z=%f\n",
-			i,
-			PlayerActor->X(),
-			PlayerActor->Y(),
-			PlayerActor->Z()
-		);
-		*/
 
-		alSource3f(
-			Voice.Source,
-			AL_POSITION,
-			(float)PlayerActor->X(),
-			(float)PlayerActor->Z(),
-			(float)PlayerActor->Y()
-		);
+		// alSource3f(Voice.Source, AL_VELOCITY,
+		//     (float)mo->Vel.X, (float)mo->Vel.Y, -(float)mo->Vel.Z);
 	}
 }
 
@@ -3051,6 +3005,8 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		getALError();
 	}
 
+	VOIP_UpdatePlayerPositions();
+
 	for (int i = 0; i < MAXPLAYERS; i++)
 	{
 		if (i == consoleplayer)
@@ -3068,7 +3024,6 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 
 void OpenALSoundRenderer::UpdateSounds()
 {
-	//VOIP_UpdatePlayerPositions();
 	alProcessUpdatesSOFT();
 
 	if(ALC.EXT_disconnect)
