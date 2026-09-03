@@ -543,6 +543,27 @@ void VOIP_UpdatePlayerPositions()
 	if (gamestate != GS_LEVEL)
 		return;
 
+	AActor* listenerMo = players[consoleplayer].mo;
+	if (listenerMo)
+	{
+		float lx = (float)listenerMo->X() / 64.0f;
+		float ly = (float)listenerMo->Z() / 64.0f;
+		float lz = -(float)listenerMo->Y() / 64.0f;
+
+		alListener3f(AL_POSITION, lx, ly, lz);
+
+		DAngle angle = listenerMo->Angles.Yaw;
+		DAngle pitch = listenerMo->Angles.Pitch;
+
+		float cosPitch = (float)pitch.Cos();
+		float forwardX = (float)angle.Cos() * cosPitch;
+		float forwardY = -(float)pitch.Sin();
+		float forwardZ = (float)angle.Sin() * cosPitch;
+
+		ALfloat listenerOri[] = { forwardX, forwardY, forwardZ, 0.0f, 1.0f, 0.0f };
+		alListenerfv(AL_ORIENTATION, listenerOri);
+	}
+
 	for (int i = 0; i < MAXPLAYERS; i++)
 	{
 		if (!playeringame[i] || !players[i].mo || i == consoleplayer)
@@ -554,14 +575,11 @@ void VOIP_UpdatePlayerPositions()
 		FVOIPVoice& Voice = VOIPVoices[i];
 		AActor* mo = players[i].mo;
 
-		alSource3f(Voice.Source, AL_POSITION,
-			(float)mo->X(),
-			(float)mo->Y(),
-			-(float)mo->Z());
+		float sx = (float)mo->X() / 64.0f;
+		float sy = (float)mo->Z() / 64.0f;
+		float sz = -(float)mo->Y() / 64.0f;
 
-
-		// alSource3f(Voice.Source, AL_VELOCITY,
-		//     (float)mo->Vel.X, (float)mo->Vel.Y, -(float)mo->Vel.Z);
+		alSource3f(Voice.Source, AL_POSITION, sx, sy, sz);
 	}
 }
 
